@@ -3,7 +3,6 @@
 #include <string.h>
 #include <time.h>
 #include <ctype.h>
-#include "kms_wrapper.h"
 #include "data_token.h"
 #include "number_token.h"
 #include "longdata_token.h"
@@ -14,35 +13,41 @@
 typedef enum { OP_TOKENIZE, OP_DETOKENIZE, OP_ROUNDTRIP } Operation;
 typedef enum { OUT_FILE, OUT_CONSOLE, OUT_NULL } OutputMode;
 
+// Demo key (hex-encoded 32-byte key)
+static const char *DEMO_KEY_HEX = "0123456789abcdeffedcba98765432100123456789abcdeffedcba9876543210";
+
 static void print_usage(const char *prog) {
     printf("Tokenization Tool (C)\n\n");
-    printf("Usage: %s [options] [input_file]\n\n", prog);
+    printf("Usage: %s -p <policy.json> -i <input> [options]\n\n", prog);
+    printf("Required:\n");
+    printf("  -p, --policy <file>     Policy JSON file (must contain key_value field)\n");
+    printf("  -i, --input <file>      Input file\n\n");
     printf("Options:\n");
-    printf("  -i, --input <file>      Input file\n");
     printf("  -o, --output <file>     Output file (enables FILE output mode)\n");
-    printf("  -t, --type <type>       Token type: DATA, NUMBER, LONGDATA, ENCRYPT\n");
-    printf("  -m, --mode <mode>       Operation: TOKENIZE, DETOKENIZE, ROUNDTRIP\n");
-    printf("  -p, --policy <file>     Policy JSON file\n");
-    printf("  --policy-name <name>    Policy name to use (required with --policy)\n");
-    printf("  -k, --key <key>         Master key for key derivation\n");
+    printf("  -m, --mode <mode>       Operation: TOKENIZE, DETOKENIZE, ROUNDTRIP [default: ROUNDTRIP]\n");
+    printf("  --policy-name <name>    Policy name (required if file contains multiple policies)\n");
     printf("  -b, --buffer <size>     Buffer size (e.g., 10M, 100K) [default: 10M]\n");
     printf("  -c, --console           Output to console\n");
-    printf("  -n, --null              Discard output (benchmark mode)\n");
+    printf("  -n, --null              Discard output (benchmark mode) [default]\n");
     printf("  --demo                  Run demo mode\n");
     printf("  -h, --help              Show this help\n\n");
+    printf("Policy Format:\n");
+    printf("  - key_value: Hex-encoded 32-byte encryption key (required)\n");
+    printf("  - function: Tokenizer type (data, number, longdata, encrypt)\n");
+    printf("  - left_offset/right_offset: Preserve prefix/suffix characters\n");
+    printf("  - symbol_table: Custom alphabet for format-preserving tokenization\n");
+    printf("  - allowed_operations: Restrict which operations can be performed\n\n");
     printf("Examples:\n");
     printf("  # Run demo\n");
     printf("  %s --demo\n\n", prog);
-    printf("  # Tokenize words and output to file\n");
-    printf("  %s -i words.txt -o tokens.txt -t DATA -m TOKENIZE\n\n", prog);
-    printf("  # Benchmark round-trip (discard output)\n");
-    printf("  %s -i words.txt -t DATA -m ROUNDTRIP -n\n\n", prog);
-    printf("  # Use policy-based tokenization\n");
-    printf("  %s -i data.txt -p policy.json --policy-name customer_email -m TOKENIZE\n\n", prog);
+    printf("  # Tokenize a file\n");
+    printf("  %s -p policy.json -i data.txt -m TOKENIZE -o tokens.txt\n\n", prog);
+    printf("  # Round-trip test (benchmark mode)\n");
+    printf("  %s -p policy.json -i data.txt -m ROUNDTRIP -n\n\n", prog);
 }
 
 static char *str_upper(char *s) {
-    for (char *p = s; *p; p++) *p = toupper(*p);
+    for (char *p = s; *p; p++) *p = toupper((unsigned char)*p);
     return s;
 }
 
@@ -70,97 +75,162 @@ static const char *format_size(size_t bytes, char *buf, size_t buf_size) {
     return buf;
 }
 
-static void run_demo(KMSWrapper *kms) {
-    printf("=== Tokenization Demo ===\n\n");
+// Create a demo policy with embedded key
+static Policy create_demo_policy(const char *name, const char *function) {
+    Policy p;
+    memset(&p, 0, sizeof(Policy));
+    p.name = strdup(name);
+    p.function = strdup(function);
+    p.key_value = strdup(DEMO_KEY_HEX);
+    p.key_len = policy_hex_to_bytes(p.key_value, p.key_bytes, 32);
+    p.enabled = 1;
+    p.is_active = 1;
+    p.type = TOKEN_TYPE_DATA;
+    if (strcasecmp(function, "number") == 0) p.type = TOKEN_TYPE_NUMBER;
+    else if (strcasecmp(function, "longdata") == 0) p.type = TOKEN_TYPE_LONGDATA;
+    else if (strcasecmp(function, "encrypt") == 0) p.type = TOKEN_TYPE_ENCRYPT;
+    return p;
+}
 
-    // Demo: DataToken
-    printf("1. DataToken (Feistel cipher, deterministic):\n");
-    uint8_t data_key[32];
-    kms_get_key(kms, "customer_name", data_key);
-    DataTokenProcessor data_proc;
-    data_token_init(&data_proc, data_key);
-    const char *data_input = "George@acme.com";
+static void free_demo_policy(Policy *p) {
+    free(p->name);
+    free(p->function);
+    free(p->key_value);
+    free(p->symbol_table);
+    free(p->filter_alphabet);
+}
+
+static void run_demo(void) {
+    printf("=== Tokenization Demo ===\n\n");
     size_t out_len;
+
+    // Demo 1: DataToken
+    printf("1. DataToken (Feistel cipher, deterministic):\n");
+    Policy data_pol = create_demo_policy("customer_email", "data");
+    DataTokenProcessor data_proc;
+    data_token_init(&data_proc, data_pol.key_bytes);
+    const char *data_input = "George@acme.com";
     char *data_token = data_token_tokenize(&data_proc, data_input, strlen(data_input), &out_len);
     char *data_detok = data_token_detokenize(&data_proc, data_token, out_len, &out_len);
+    printf("   Policy:      %s\n", data_pol.name);
     printf("   Input:       %s\n", data_input);
     printf("   Token:       %s\n", data_token);
     printf("   Detokenized: %s\n", data_detok);
     printf("   Match: %s\n\n", strcmp(data_input, data_detok) == 0 ? "true" : "false");
-    free(data_token);
-    free(data_detok);
+    free(data_token); free(data_detok);
+    free_demo_policy(&data_pol);
 
-    // Demo: NumberToken
+    // Demo 2: NumberToken
     printf("2. NumberToken (Format-preserving, deterministic):\n");
-    uint8_t num_key[32];
-    kms_get_key(kms, "customer_phone", num_key);
+    Policy num_pol = create_demo_policy("customer_phone", "number");
     NumberTokenProcessor num_proc;
-    number_token_init(&num_proc, num_key);
+    number_token_init(&num_proc, num_pol.key_bytes);
     const char *num_input = "0123456789";
     char *num_token = number_token_tokenize(&num_proc, num_input, strlen(num_input), &out_len);
     char *num_detok = number_token_detokenize(&num_proc, num_token, out_len, &out_len);
+    printf("   Policy:      %s\n", num_pol.name);
     printf("   Input:       %s\n", num_input);
     printf("   Token:       %s\n", num_token);
     printf("   Detokenized: %s\n", num_detok);
     printf("   Match: %s\n\n", strcmp(num_input, num_detok) == 0 ? "true" : "false");
-    free(num_token);
-    free(num_detok);
+    free(num_token); free(num_detok);
+    free_demo_policy(&num_pol);
 
-    // Demo: LongDataToken
+    // Demo 3: LongDataToken
     printf("3. LongDataToken (AES-CBC, deterministic):\n");
-    uint8_t long_key[32];
-    kms_get_key(kms, "customer_comments", long_key);
+    Policy long_pol = create_demo_policy("customer_comments", "longdata");
     LongDataTokenProcessor long_proc;
-    longdata_token_init(&long_proc, long_key);
+    longdata_token_init(&long_proc, long_pol.key_bytes);
     const char *long_input = "This is a very very long comment field....";
     char *long_token = longdata_token_tokenize(&long_proc, long_input, strlen(long_input), &out_len);
     char *long_detok = longdata_token_detokenize(&long_proc, long_token, out_len, &out_len);
+    printf("   Policy:      %s\n", long_pol.name);
     printf("   Input:       %s\n", long_input);
     printf("   Token:       %s\n", long_token);
     printf("   Detokenized: %s\n", long_detok);
     printf("   Match: %s\n\n", strcmp(long_input, long_detok) == 0 ? "true" : "false");
-    free(long_token);
-    free(long_detok);
+    free(long_token); free(long_detok);
+    free_demo_policy(&long_pol);
 
-    // Demo: EncryptToken
+    // Demo 4: EncryptToken
     printf("4. EncryptToken (AES-CTR with random IV, non-deterministic):\n");
-    uint8_t enc_key[32];
-    kms_get_key(kms, "encrypt_comments", enc_key);
+    Policy enc_pol = create_demo_policy("encrypt_comments", "encrypt");
     EncryptTokenProcessor enc_proc;
-    encrypt_token_init(&enc_proc, enc_key);
+    encrypt_token_init(&enc_proc, enc_pol.key_bytes);
     const char *enc_input = "This is a very very long comment field....";
     char *enc_token1 = encrypt_token_tokenize(&enc_proc, enc_input, strlen(enc_input), &out_len);
     char *enc_token2 = encrypt_token_tokenize(&enc_proc, enc_input, strlen(enc_input), &out_len);
     char *enc_detok = encrypt_token_detokenize(&enc_proc, enc_token1, strlen(enc_token1), &out_len);
+    printf("   Policy:       %s\n", enc_pol.name);
     printf("   Input:        %s\n", enc_input);
     printf("   Token 1:      %s\n", enc_token1);
     printf("   Token 2:      %s\n", enc_token2);
     printf("   (Note: Different tokens for same input due to random IV)\n");
     printf("   Detokenized:  %s\n", enc_detok);
     printf("   Match: %s\n\n", strcmp(enc_input, enc_detok) == 0 ? "true" : "false");
-    free(enc_token1);
-    free(enc_token2);
-    free(enc_detok);
+    free(enc_token1); free(enc_token2); free(enc_detok);
+    free_demo_policy(&enc_pol);
 
-    // Demo: Filter (format-preserving with alphabet)
-    printf("5. Filter (lowercase only):\n");
-    uint8_t filter_key[32];
-    kms_get_key(kms, "filter_test", filter_key);
+    // Demo 5: Filter (lowercase only)
+    printf("5. Format-Preserving (lowercase alphabet via symbol_table):\n");
+    Policy filter_pol = create_demo_policy("lowercase_text", "data");
+    filter_pol.symbol_table = strdup("abcdefghijklmnopqrstuvwxyz");
+    filter_pol.filter_alphabet = strdup("abcdefghijklmnopqrstuvwxyz");
     DataTokenProcessor filter_proc;
-    data_token_init(&filter_proc, filter_key);
+    data_token_init_with_alphabet(&filter_proc, filter_pol.key_bytes, filter_pol.symbol_table);
     Filter filter;
-    filter_init(&filter, "abcdefghijklmnopqrstuvwxyz");
+    filter_init(&filter, filter_pol.symbol_table);
     const char *filter_input = "Hello World 123";
     char *filter_token = filter_tokenize(&filter, &filter_proc, filter_input, strlen(filter_input), &out_len);
     char *filter_detok = filter_detokenize(&filter, &filter_proc, filter_token, out_len, &out_len);
+    printf("   Policy:      %s\n", filter_pol.name);
     printf("   Alphabet:    a-z (26 chars)\n");
     printf("   Input:       %s\n", filter_input);
     printf("   Token:       %s\n", filter_token);
     printf("   Detokenized: %s\n", filter_detok);
-    printf("   Match: %s\n", strcmp(filter_input, filter_detok) == 0 ? "true" : "false");
-    free(filter_token);
-    free(filter_detok);
+    printf("   Match: %s\n\n", strcmp(filter_input, filter_detok) == 0 ? "true" : "false");
+    free(filter_token); free(filter_detok);
     filter_free(&filter);
+    free_demo_policy(&filter_pol);
+
+    // Demo 6: Offset tokenization
+    printf("6. Offset Tokenization (preserve first 2 and last 3 chars):\n");
+    Policy offset_pol = create_demo_policy("partial_mask", "data");
+    offset_pol.left_offset = 2;
+    offset_pol.right_offset = 3;
+    DataTokenProcessor offset_proc;
+    data_token_init(&offset_proc, offset_pol.key_bytes);
+    const char *offset_input = "ABCDEFGHIJKLM";
+    size_t offset_len = strlen(offset_input);
+    // Tokenize middle portion only
+    const char *middle = offset_input + offset_pol.left_offset;
+    size_t middle_len = offset_len - offset_pol.left_offset - offset_pol.right_offset;
+    char *middle_token = data_token_tokenize(&offset_proc, middle, middle_len, &out_len);
+    // Reconstruct
+    char *offset_result = malloc(offset_len + 1);
+    memcpy(offset_result, offset_input, offset_pol.left_offset);
+    memcpy(offset_result + offset_pol.left_offset, middle_token, out_len);
+    memcpy(offset_result + offset_pol.left_offset + out_len, offset_input + offset_len - offset_pol.right_offset, offset_pol.right_offset);
+    offset_result[offset_len] = '\0';
+    // Detokenize
+    const char *det_middle = offset_result + offset_pol.left_offset;
+    char *det_result_mid = data_token_detokenize(&offset_proc, det_middle, middle_len, &out_len);
+    char *offset_detok = malloc(offset_len + 1);
+    memcpy(offset_detok, offset_input, offset_pol.left_offset);
+    memcpy(offset_detok + offset_pol.left_offset, det_result_mid, out_len);
+    memcpy(offset_detok + offset_pol.left_offset + out_len, offset_result + offset_len - offset_pol.right_offset, offset_pol.right_offset);
+    offset_detok[offset_len] = '\0';
+
+    printf("   Policy:      %s (left_offset=%d, right_offset=%d)\n",
+           offset_pol.name, offset_pol.left_offset, offset_pol.right_offset);
+    printf("   Input:       %s\n", offset_input);
+    printf("   Token:       %s\n", offset_result);
+    printf("   Detokenized: %s\n", offset_detok);
+    printf("   Preserved:   prefix='%.2s', suffix='%s'\n",
+           offset_input, offset_input + offset_len - 3);
+    printf("   Match: %s\n", strcmp(offset_input, offset_detok) == 0 ? "true" : "false");
+    free(middle_token); free(offset_result); free(det_result_mid); free(offset_detok);
+    free_demo_policy(&offset_pol);
 }
 
 // Tokenizer context for policy-based processing
@@ -172,41 +242,41 @@ typedef struct {
     EncryptTokenProcessor enc_proc;
     Filter *filter;
     int has_filter;
+    int left_offset;
+    int right_offset;
 } TokenizerContext;
 
-static void init_tokenizer_from_policy(TokenizerContext *ctx, Policy *policy, KMSWrapper *kms) {
-    uint8_t key[32];
-    kms_get_key(kms, policy->name, key);
-
+static void init_tokenizer_from_policy(TokenizerContext *ctx, Policy *policy) {
     ctx->type = policy->type;
     ctx->filter = NULL;
     ctx->has_filter = 0;
+    ctx->left_offset = policy->left_offset;
+    ctx->right_offset = policy->right_offset;
 
     switch (policy->type) {
         case TOKEN_TYPE_DATA:
-            if (policy->filter_alphabet) {
-                // Use filter alphabet for format-preserving tokenization
-                data_token_init_with_alphabet(&ctx->data_proc, key, policy->filter_alphabet);
+            if (policy->symbol_table) {
+                data_token_init_with_alphabet(&ctx->data_proc, policy->key_bytes, policy->symbol_table);
                 ctx->filter = malloc(sizeof(Filter));
-                filter_init(ctx->filter, policy->filter_alphabet);
+                filter_init(ctx->filter, policy->symbol_table);
                 ctx->has_filter = 1;
             } else {
-                data_token_init(&ctx->data_proc, key);
+                data_token_init(&ctx->data_proc, policy->key_bytes);
             }
             break;
         case TOKEN_TYPE_NUMBER:
-            number_token_init(&ctx->num_proc, key);
-            if (policy->filter_alphabet) {
+            number_token_init(&ctx->num_proc, policy->key_bytes);
+            if (policy->symbol_table) {
                 ctx->filter = malloc(sizeof(Filter));
-                filter_init(ctx->filter, policy->filter_alphabet);
+                filter_init(ctx->filter, policy->symbol_table);
                 ctx->has_filter = 1;
             }
             break;
         case TOKEN_TYPE_LONGDATA:
-            longdata_token_init(&ctx->long_proc, key);
+            longdata_token_init(&ctx->long_proc, policy->key_bytes);
             break;
         case TOKEN_TYPE_ENCRYPT:
-            encrypt_token_init(&ctx->enc_proc, key);
+            encrypt_token_init(&ctx->enc_proc, policy->key_bytes);
             break;
     }
 }
@@ -218,7 +288,7 @@ static void free_tokenizer_context(TokenizerContext *ctx) {
     }
 }
 
-static char *tokenize_with_context(TokenizerContext *ctx, const char *data, size_t len, size_t *out_len) {
+static char *tokenize_base(TokenizerContext *ctx, const char *data, size_t len, size_t *out_len) {
     if (ctx->has_filter) {
         switch (ctx->type) {
             case TOKEN_TYPE_DATA:
@@ -242,7 +312,7 @@ static char *tokenize_with_context(TokenizerContext *ctx, const char *data, size
     return NULL;
 }
 
-static char *detokenize_with_context(TokenizerContext *ctx, const char *data, size_t len, size_t *out_len) {
+static char *detokenize_base(TokenizerContext *ctx, const char *data, size_t len, size_t *out_len) {
     if (ctx->has_filter) {
         switch (ctx->type) {
             case TOKEN_TYPE_DATA:
@@ -266,14 +336,85 @@ static char *detokenize_with_context(TokenizerContext *ctx, const char *data, si
     return NULL;
 }
 
+// Tokenize with offset support
+static char *tokenize_with_context(TokenizerContext *ctx, const char *data, size_t len, size_t *out_len) {
+    if (ctx->left_offset <= 0 && ctx->right_offset <= 0) {
+        return tokenize_base(ctx, data, len, out_len);
+    }
+
+    // Offset handling
+    int left = ctx->left_offset;
+    int right = ctx->right_offset;
+
+    if ((size_t)(left + right) >= len) {
+        // Nothing to tokenize - return copy
+        char *copy = malloc(len + 1);
+        memcpy(copy, data, len);
+        copy[len] = '\0';
+        *out_len = len;
+        return copy;
+    }
+
+    const char *middle = data + left;
+    size_t middle_len = len - left - right;
+    size_t mid_out_len;
+    char *mid_result = tokenize_base(ctx, middle, middle_len, &mid_out_len);
+    if (!mid_result) return NULL;
+
+    // Reconstruct: prefix + tokenized_middle + suffix
+    size_t total = left + mid_out_len + right;
+    char *result = malloc(total + 1);
+    if (left > 0) memcpy(result, data, left);
+    memcpy(result + left, mid_result, mid_out_len);
+    if (right > 0) memcpy(result + left + mid_out_len, data + len - right, right);
+    result[total] = '\0';
+    *out_len = total;
+
+    free(mid_result);
+    return result;
+}
+
+// Detokenize with offset support
+static char *detokenize_with_context(TokenizerContext *ctx, const char *data, size_t len, size_t *out_len) {
+    if (ctx->left_offset <= 0 && ctx->right_offset <= 0) {
+        return detokenize_base(ctx, data, len, out_len);
+    }
+
+    int left = ctx->left_offset;
+    int right = ctx->right_offset;
+
+    if ((size_t)(left + right) >= len) {
+        char *copy = malloc(len + 1);
+        memcpy(copy, data, len);
+        copy[len] = '\0';
+        *out_len = len;
+        return copy;
+    }
+
+    const char *middle = data + left;
+    size_t middle_len = len - left - right;
+    size_t mid_out_len;
+    char *mid_result = detokenize_base(ctx, middle, middle_len, &mid_out_len);
+    if (!mid_result) return NULL;
+
+    size_t total = left + mid_out_len + right;
+    char *result = malloc(total + 1);
+    if (left > 0) memcpy(result, data, left);
+    memcpy(result + left, mid_result, mid_out_len);
+    if (right > 0) memcpy(result + left + mid_out_len, data + len - right, right);
+    result[total] = '\0';
+    *out_len = total;
+
+    free(mid_result);
+    return result;
+}
+
 int main(int argc, char *argv[]) {
     // Defaults
     char *input_file = NULL;
     char *output_file = NULL;
-    char *master_key = NULL;
     char *policy_file = NULL;
     char *policy_name = NULL;
-    TokenType token_type = TOKEN_TYPE_DATA;
     Operation operation = OP_ROUNDTRIP;
     OutputMode output_mode = OUT_NULL;
     size_t buffer_size = 10 * 1024 * 1024;
@@ -294,17 +435,6 @@ int main(int argc, char *argv[]) {
             if (++i < argc) policy_file = argv[i];
         } else if (strcmp(argv[i], "--policy-name") == 0) {
             if (++i < argc) policy_name = argv[i];
-        } else if (strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--type") == 0) {
-            if (++i < argc) {
-                char type_buf[32];
-                strncpy(type_buf, argv[i], sizeof(type_buf) - 1);
-                type_buf[sizeof(type_buf) - 1] = '\0';
-                str_upper(type_buf);
-                if (strcmp(type_buf, "DATA") == 0) token_type = TOKEN_TYPE_DATA;
-                else if (strcmp(type_buf, "NUMBER") == 0) token_type = TOKEN_TYPE_NUMBER;
-                else if (strcmp(type_buf, "LONGDATA") == 0) token_type = TOKEN_TYPE_LONGDATA;
-                else if (strcmp(type_buf, "ENCRYPT") == 0) token_type = TOKEN_TYPE_ENCRYPT;
-            }
         } else if (strcmp(argv[i], "-m") == 0 || strcmp(argv[i], "--mode") == 0 || strcmp(argv[i], "--operation") == 0) {
             if (++i < argc) {
                 char mode_buf[32];
@@ -315,8 +445,6 @@ int main(int argc, char *argv[]) {
                 else if (strcmp(mode_buf, "DETOKENIZE") == 0) operation = OP_DETOKENIZE;
                 else if (strcmp(mode_buf, "ROUNDTRIP") == 0) operation = OP_ROUNDTRIP;
             }
-        } else if (strcmp(argv[i], "-k") == 0 || strcmp(argv[i], "--key") == 0) {
-            if (++i < argc) master_key = argv[i];
         } else if (strcmp(argv[i], "-b") == 0 || strcmp(argv[i], "--buffer") == 0) {
             if (++i < argc) buffer_size = parse_size(argv[i]);
         } else if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--console") == 0) {
@@ -324,29 +452,21 @@ int main(int argc, char *argv[]) {
         } else if (strcmp(argv[i], "-n") == 0 || strcmp(argv[i], "--null") == 0) {
             output_mode = OUT_NULL;
         } else if (argv[i][0] != '-') {
-            // Positional argument - treat as input file
             if (input_file == NULL) input_file = argv[i];
         }
     }
 
-    // Validate policy options
-    if (policy_file && !policy_name) {
-        fprintf(stderr, "Error: --policy-name is required when using --policy\n");
-        return 2;
-    }
-
-    // Initialize KMS
-    KMSWrapper kms;
-    if (master_key) {
-        kms_init_with_key(&kms, master_key);
-    } else {
-        kms_init(&kms);
-    }
-
     // Run demo if requested or no input file
     if (run_demo_mode || input_file == NULL) {
-        run_demo(&kms);
+        run_demo();
         return 0;
+    }
+
+    // Policy file is required
+    if (policy_file == NULL) {
+        fprintf(stderr, "Error: Policy file is required (-p <file>)\n");
+        fprintf(stderr, "       Policy must contain key_value field with the encryption key\n");
+        return 2;
     }
 
     // Validate input file
@@ -356,63 +476,106 @@ int main(int argc, char *argv[]) {
         return 2;
     }
 
-    // Initialize tokenizer context
-    TokenizerContext ctx;
-    memset(&ctx, 0, sizeof(ctx));
+    // Load policy
+    PolicyLoader loader;
+    policy_loader_init(&loader);
 
-    if (policy_file) {
-        // Load policy
-        PolicyLoader loader;
-        policy_loader_init(&loader);
+    if (policy_loader_load_file(&loader, policy_file) != 0) {
+        fprintf(stderr, "Error: Cannot load policy file '%s'\n", policy_file);
+        fclose(f);
+        return 2;
+    }
 
-        if (policy_loader_load_file(&loader, policy_file) != 0) {
-            fprintf(stderr, "Error: Cannot load policy file '%s'\n", policy_file);
-            fclose(f);
-            return 2;
-        }
+    if (loader.count == 0) {
+        fprintf(stderr, "Error: No policies found in policy file\n");
+        policy_loader_free(&loader);
+        fclose(f);
+        return 2;
+    }
 
-        Policy *policy = policy_loader_get_policy(&loader, policy_name);
-        if (!policy) {
-            fprintf(stderr, "Error: Policy '%s' not found in '%s'\n", policy_name, policy_file);
+    // Select policy
+    Policy *policy;
+    if (policy_name == NULL) {
+        if (loader.count == 1) {
+            policy = policy_loader_get_first(&loader);
+            policy_name = policy->name;
+        } else {
+            fprintf(stderr, "Error: --policy-name is required when policy file contains multiple policies\n");
             policy_loader_free(&loader);
             fclose(f);
             return 2;
         }
-
-        printf("Policy:    %s (from %s)\n", policy_name, policy_file);
-        init_tokenizer_from_policy(&ctx, policy, &kms);
-        token_type = policy->type;
-
-        policy_loader_free(&loader);
     } else {
-        // Direct tokenizer initialization
-        uint8_t key[32];
-        const char *type_names[] = {"data", "number", "longdata", "encrypt"};
-        kms_get_key(&kms, type_names[token_type], key);
-
-        ctx.type = token_type;
-        ctx.has_filter = 0;
-        ctx.filter = NULL;
-
-        switch (token_type) {
-            case TOKEN_TYPE_DATA: data_token_init(&ctx.data_proc, key); break;
-            case TOKEN_TYPE_NUMBER: number_token_init(&ctx.num_proc, key); break;
-            case TOKEN_TYPE_LONGDATA: longdata_token_init(&ctx.long_proc, key); break;
-            case TOKEN_TYPE_ENCRYPT: encrypt_token_init(&ctx.enc_proc, key); break;
+        policy = policy_loader_get_policy(&loader, policy_name);
+        if (!policy) {
+            fprintf(stderr, "Error: Policy '%s' not found in policy file\n", policy_name);
+            policy_loader_free(&loader);
+            fclose(f);
+            return 2;
         }
     }
 
+    // Validate operation is allowed by policy
+    int allowed;
+    if (operation == OP_ROUNDTRIP) {
+        allowed = policy_is_operation_allowed(policy, "tokenize") &&
+                  policy_is_operation_allowed(policy, "detokenize");
+    } else {
+        const char *op_names[] = {"tokenize", "detokenize"};
+        allowed = policy_is_operation_allowed(policy, op_names[operation]);
+    }
+    if (!allowed) {
+        fprintf(stderr, "Error: Operation not allowed by policy '%s'\n", policy_name);
+        policy_loader_free(&loader);
+        fclose(f);
+        return 2;
+    }
+
+    // Check enabled and active
+    if (!policy->enabled) {
+        fprintf(stderr, "Error: Policy '%s' is not enabled\n", policy_name);
+        policy_loader_free(&loader);
+        fclose(f);
+        return 2;
+    }
+    if (!policy->is_active) {
+        fprintf(stderr, "Error: Policy '%s' is not active\n", policy_name);
+        policy_loader_free(&loader);
+        fclose(f);
+        return 2;
+    }
+
+    // Verify policy has embedded key
+    if (!policy->key_value || policy->key_len == 0) {
+        fprintf(stderr, "Error: Policy '%s' has no embedded key (key_value field is required)\n", policy_name);
+        policy_loader_free(&loader);
+        fclose(f);
+        return 2;
+    }
+
+    // Initialize tokenizer context from policy
+    TokenizerContext ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    init_tokenizer_from_policy(&ctx, policy);
+
     // Print info
+    printf("Policy:    %s (from %s)\n", policy_name, policy_file);
+    if (policy->left_offset > 0 || policy->right_offset > 0) {
+        printf("Offsets:   left=%d, right=%d\n", policy->left_offset, policy->right_offset);
+    }
+    if (policy->symbol_table) {
+        printf("Alphabet:  %zu chars\n", strlen(policy->symbol_table));
+    }
+
     const char *type_strs[] = {"DATA", "NUMBER", "LONGDATA", "ENCRYPT"};
     const char *op_strs[] = {"TOKENIZE", "DETOKENIZE", "ROUNDTRIP"};
-    const char *out_strs[] = {"FILE", "CONSOLE", "NULL"};
     char size_buf[32];
 
     printf("\n");
     printf("Input:     %s\n", input_file);
-    printf("Type:      %s\n", type_strs[token_type]);
+    printf("Type:      %s\n", type_strs[policy->type]);
     printf("Operation: %s\n", op_strs[operation]);
-    printf("Output:    %s\n", output_mode == OUT_FILE ? output_file : out_strs[output_mode]);
+    printf("Output:    %s\n", output_mode == OUT_FILE ? output_file : (output_mode == OUT_CONSOLE ? "CONSOLE" : "NULL"));
     printf("Buffer:    %s\n", format_size(buffer_size, size_buf, sizeof(size_buf)));
     printf("\n");
 
@@ -427,7 +590,6 @@ int main(int argc, char *argv[]) {
     size_t line_cap = 0;
     ssize_t line_len;
     while ((line_len = getline(&line, &line_cap, f)) != -1) {
-        // Remove trailing newline
         if (line_len > 0 && line[line_len - 1] == '\n') {
             line[--line_len] = '\0';
         }
@@ -531,6 +693,7 @@ int main(int argc, char *argv[]) {
         free(lines[i]);
     }
     free(lines);
+    policy_loader_free(&loader);
 
     return errors > 0 ? 1 : 0;
 }

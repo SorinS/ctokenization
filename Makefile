@@ -14,7 +14,6 @@ BIN_DIR := bin
 OUT := $(BIN_DIR)/ctokenization
 
 SRCS := $(SRC_DIR)/main.c \
-        $(SRC_DIR)/kms_wrapper.c \
         $(SRC_DIR)/data_token.c \
         $(SRC_DIR)/number_token.c \
         $(SRC_DIR)/longdata_token.c \
@@ -24,7 +23,7 @@ SRCS := $(SRC_DIR)/main.c \
 
 OBJS := $(SRCS:.c=.o)
 
-.PHONY: all build clean run benchmark
+.PHONY: all build clean run demo benchmark
 
 all: build
 
@@ -44,16 +43,20 @@ clean:
 	rm -rf $(BIN_DIR)
 
 # Test commands
+demo: build
+	$(OUT) --demo
+
 run: build
-	$(OUT) tokenize data test_policy "Hello World"
+	$(OUT) --demo
 
 benchmark: build
-	$(OUT) benchmark data test_policy $(BIN_DIR)/words_alpha.txt
+	$(OUT) -p $(BIN_DIR)/policy_simple.json -i $(BIN_DIR)/words_alpha.txt -m ROUNDTRIP -n
 
 # Dependencies
-$(SRC_DIR)/main.o: $(SRC_DIR)/kms_wrapper.h $(SRC_DIR)/data_token.h $(SRC_DIR)/number_token.h $(SRC_DIR)/longdata_token.h $(SRC_DIR)/encrypt_token.h
+$(SRC_DIR)/main.o: $(SRC_DIR)/data_token.h $(SRC_DIR)/number_token.h $(SRC_DIR)/longdata_token.h $(SRC_DIR)/encrypt_token.h $(SRC_DIR)/policy_loader.h $(SRC_DIR)/filter.h
 $(SRC_DIR)/data_token.o: $(SRC_DIR)/data_token.h
 $(SRC_DIR)/number_token.o: $(SRC_DIR)/number_token.h
 $(SRC_DIR)/longdata_token.o: $(SRC_DIR)/longdata_token.h
 $(SRC_DIR)/encrypt_token.o: $(SRC_DIR)/encrypt_token.h
-$(SRC_DIR)/kms_wrapper.o: $(SRC_DIR)/kms_wrapper.h
+$(SRC_DIR)/policy_loader.o: $(SRC_DIR)/policy_loader.h
+$(SRC_DIR)/filter.o: $(SRC_DIR)/filter.h $(SRC_DIR)/data_token.h $(SRC_DIR)/number_token.h
