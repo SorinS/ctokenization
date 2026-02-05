@@ -44,3 +44,8 @@ out/
 ### CSS ###
 _site/
 *.css
+
+### Object files
+*.o
+*.so
+*.dylib
