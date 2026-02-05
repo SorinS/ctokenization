@@ -184,15 +184,23 @@ static void init_tokenizer_from_policy(TokenizerContext *ctx, Policy *policy, KM
 
     switch (policy->type) {
         case TOKEN_TYPE_DATA:
-            data_token_init(&ctx->data_proc, key);
+            if (policy->filter_alphabet) {
+                // Use filter alphabet for format-preserving tokenization
+                data_token_init_with_alphabet(&ctx->data_proc, key, policy->filter_alphabet);
+                ctx->filter = malloc(sizeof(Filter));
+                filter_init(ctx->filter, policy->filter_alphabet);
+                ctx->has_filter = 1;
+            } else {
+                data_token_init(&ctx->data_proc, key);
+            }
+            break;
+        case TOKEN_TYPE_NUMBER:
+            number_token_init(&ctx->num_proc, key);
             if (policy->filter_alphabet) {
                 ctx->filter = malloc(sizeof(Filter));
                 filter_init(ctx->filter, policy->filter_alphabet);
                 ctx->has_filter = 1;
             }
-            break;
-        case TOKEN_TYPE_NUMBER:
-            number_token_init(&ctx->num_proc, key);
             break;
         case TOKEN_TYPE_LONGDATA:
             longdata_token_init(&ctx->long_proc, key);
@@ -211,8 +219,15 @@ static void free_tokenizer_context(TokenizerContext *ctx) {
 }
 
 static char *tokenize_with_context(TokenizerContext *ctx, const char *data, size_t len, size_t *out_len) {
-    if (ctx->has_filter && ctx->type == TOKEN_TYPE_DATA) {
-        return filter_tokenize(ctx->filter, &ctx->data_proc, data, len, out_len);
+    if (ctx->has_filter) {
+        switch (ctx->type) {
+            case TOKEN_TYPE_DATA:
+                return filter_tokenize(ctx->filter, &ctx->data_proc, data, len, out_len);
+            case TOKEN_TYPE_NUMBER:
+                return filter_tokenize_number(ctx->filter, &ctx->num_proc, data, len, out_len);
+            default:
+                break;
+        }
     }
     switch (ctx->type) {
         case TOKEN_TYPE_DATA:
@@ -228,8 +243,15 @@ static char *tokenize_with_context(TokenizerContext *ctx, const char *data, size
 }
 
 static char *detokenize_with_context(TokenizerContext *ctx, const char *data, size_t len, size_t *out_len) {
-    if (ctx->has_filter && ctx->type == TOKEN_TYPE_DATA) {
-        return filter_detokenize(ctx->filter, &ctx->data_proc, data, len, out_len);
+    if (ctx->has_filter) {
+        switch (ctx->type) {
+            case TOKEN_TYPE_DATA:
+                return filter_detokenize(ctx->filter, &ctx->data_proc, data, len, out_len);
+            case TOKEN_TYPE_NUMBER:
+                return filter_detokenize_number(ctx->filter, &ctx->num_proc, data, len, out_len);
+            default:
+                break;
+        }
     }
     switch (ctx->type) {
         case TOKEN_TYPE_DATA:

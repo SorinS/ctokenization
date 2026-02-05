@@ -33,4 +33,15 @@ char *filter_tokenize(Filter *f, DataTokenProcessor *proc,
 char *filter_detokenize(Filter *f, DataTokenProcessor *proc,
                         const char *data, size_t len, size_t *out_len);
 
+// Forward declaration for NumberTokenProcessor
+#include "number_token.h"
+
+// Tokenize string with NumberTokenProcessor, only tokenizing approved characters
+char *filter_tokenize_number(Filter *f, NumberTokenProcessor *proc,
+                             const char *data, size_t len, size_t *out_len);
+
+// Detokenize string with NumberTokenProcessor
+char *filter_detokenize_number(Filter *f, NumberTokenProcessor *proc,
+                               const char *data, size_t len, size_t *out_len);
+
 #endif // FILTER_H
